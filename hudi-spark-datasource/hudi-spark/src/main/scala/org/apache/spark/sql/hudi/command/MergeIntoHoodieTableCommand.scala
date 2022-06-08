@@ -188,7 +188,7 @@ case class MergeIntoHoodieTableCommand(mergeInto: MergeIntoTable) extends Hoodie
     }
     target2SourcePreCombineFiled.foreach {
       case (targetPreCombineField, sourceExpression)
-        if !isEqualToTarget(targetPreCombineField, sourceExpression) =>
+        if !isEqualToTargetPreCombineField(targetPreCombineField, sourceExpression) =>
           sourceDF = sourceDF.withColumn(targetPreCombineField, new Column(sourceExpression))
           sourceDFOutput = sourceDFOutput :+ AttributeReference(targetPreCombineField, sourceExpression.dataType)()
       case _=>
@@ -196,6 +196,14 @@ case class MergeIntoHoodieTableCommand(mergeInto: MergeIntoTable) extends Hoodie
     sourceDF
   }
 
+  /**
+   * Check whether expression have the same column name with target column.
+   *
+   * Merge condition cases that return true:
+   * 1) merge into .. on h0.id = s0.id ..
+   * 2) merge into .. on h0.id = cast(s0.id as int) ..
+   * "id" is primaryKey field of h0.
+   */
   private def isEqualToTarget(targetColumnName: String, sourceExpression: Expression): Boolean = {
     val sourceColumnName = sourceDFOutput.map(_.name)
     val resolver = sparkSession.sessionState.conf.resolver
@@ -211,6 +219,29 @@ case class MergeIntoHoodieTableCommand(mergeInto: MergeIntoTable) extends Hoodie
         }
       case _=> false
     }
+  }
+
+  /**
+   * Check whether expression of preCombine field have the same column name with target column.
+   *
+   * Merge expression cases that return true:
+   * 1) merge into .. on .. update set ts = s0.ts
+   * 2) merge into .. on .. update set ts = cast(s0.ts as int)
+   * 3) merge into .. on .. update set ts = s0.ts+1 (expressions like this whose sub node has the same column name with target)
+   * "ts" is preCombine field of h0.
+   */
+  private def isEqualToTargetPreCombineField(targetColumnName: String, sourceExpression: Expression): Boolean = {
+    val sourceColumnName = sourceDFOutput.map(_.name)
+    val resolver = sparkSession.sessionState.conf.resolver
+
+    var sourceColumnNameIsEqulaToTarget = false
+    // sub node of the expression may have same column name with target column name
+    sourceExpression.foreach {
+      case attr: AttributeReference if sourceColumnName.find(resolver(_, attr.name)).get.equals(targetColumnName) =>
+        sourceColumnNameIsEqulaToTarget = true
+      case _ =>
+    }
+    sourceColumnNameIsEqulaToTarget
   }
 
   /**
